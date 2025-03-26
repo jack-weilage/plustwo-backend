@@ -2,12 +2,12 @@ use entities::sea_orm_active_enums::MessageKind;
 use entities::{
     broadcasts::Entity as Broadcasts, chatters::Entity as Chatters, messages::Entity as Messages,
 };
+use sea_orm::{ActiveModelTrait, ColumnTrait, IntoActiveModel, QueryFilter};
 use sea_orm::{
     ActiveValue::{Set, Unchanged},
     Database, DatabaseConnection, EntityTrait as _,
     sea_query::OnConflict,
 };
-use sea_orm::{ColumnTrait, IntoActiveModel, QueryFilter};
 
 pub use sea_orm::prelude::{DateTime, Uuid};
 
@@ -157,17 +157,18 @@ impl DatabaseClient {
         broadcaster_id: i64,
         ended_at: DateTime,
     ) -> Result<(), sea_orm::DbErr> {
-        let broadcast = entities::broadcasts::ActiveModel {
-            // TODO: does this correctly filter for only this broadcaster?
-            broadcaster_id: Unchanged(broadcaster_id),
-            ended_at: Set(Some(ended_at)),
-            ..Default::default()
-        };
-
-        Broadcasts::update(broadcast)
+        let broadcast = Broadcasts::find()
             .filter(entities::broadcasts::Column::EndedAt.is_null())
-            .exec(&self.db)
-            .await?;
+            .filter(entities::broadcasts::Column::BroadcasterId.eq(broadcaster_id))
+            .one(&self.db)
+            .await?
+            // TODO: properly handle
+            .unwrap();
+
+        let mut broadcast = broadcast.into_active_model();
+        broadcast.ended_at = Set(Some(ended_at));
+
+        broadcast.update(&self.db).await?;
 
         Ok(())
     }
