@@ -130,7 +130,7 @@ async fn main() -> eyre::Result<()> {
             db.insert_many_messages(&messages).await?;
 
             db.end_broadcast(
-                video.node.id.parse()?,
+                broadcaster.id.parse()?,
                 (video.node.created_at + Duration::from_secs(video.node.length_seconds))
                     .naive_utc(),
             )
