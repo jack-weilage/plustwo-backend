@@ -6,7 +6,7 @@ use plustwo_database::{
     DatabaseClient,
     entities::{self, sea_orm_active_enums::MessageKind},
 };
-use plustwo_twitch_gql::TwitchGqlClient;
+use plustwo_twitch_gql::{CommentsByVideoAndCursorMessage, TwitchGqlClient};
 
 macro_rules! env_var {
     ($name:expr) => {
@@ -58,6 +58,15 @@ async fn main() -> eyre::Result<()> {
                 continue;
             }
 
+            if db
+                .get_broadcast(video.node.id.parse()?)
+                .await?
+                .is_some_and(|b| b.ended_at.is_some())
+            {
+                video_bar.set_length(video_bar.length().unwrap() - 1);
+                continue;
+            }
+
             db.start_broadcast(
                 video.node.id.parse()?,
                 broadcaster.id.parse()?,
@@ -92,19 +101,9 @@ async fn main() -> eyre::Result<()> {
                         (comment.node.created_at - video.node.created_at).num_seconds() as u64,
                     );
 
-                    // Some users don't show up. Maybe they've deleted their accounts or been
-                    // banned?
-                    let first_chunk = &comment.node.message.fragments.first().unwrap().text;
-                    let last_chunk = &comment.node.message.fragments.last().unwrap().text;
-
-                    let message_kind =
-                        if first_chunk.starts_with("+2") || last_chunk.ends_with("+2") {
-                            MessageKind::PlusTwo
-                        } else if first_chunk.starts_with("-2") || last_chunk.ends_with("-2") {
-                            MessageKind::MinusTwo
-                        } else {
-                            continue;
-                        };
+                    let Some(message_kind) = kind_from_message(&comment.node.message) else {
+                        continue;
+                    };
 
                     let chatter = entities::chatters::Model {
                         id: user.id.parse()?,
@@ -146,4 +145,19 @@ async fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+fn kind_from_message(message: &CommentsByVideoAndCursorMessage) -> Option<MessageKind> {
+    let first_frag = &message.fragments.first()?.text;
+    let last_frag = &message.fragments.last()?.text;
+
+    Some(
+        if first_frag.starts_with("+2") || last_frag.ends_with("+2") {
+            MessageKind::PlusTwo
+        } else if first_frag.starts_with("-2") || last_frag.ends_with("-2") {
+            MessageKind::MinusTwo
+        } else {
+            return None;
+        },
+    )
 }

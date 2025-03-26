@@ -172,4 +172,11 @@ impl DatabaseClient {
 
         Ok(())
     }
+
+    pub async fn get_broadcast(
+        &self,
+        broadcast_id: i64,
+    ) -> Result<Option<entities::broadcasts::Model>, sea_orm::DbErr> {
+        Broadcasts::find_by_id(broadcast_id).one(&self.db).await
+    }
 }
