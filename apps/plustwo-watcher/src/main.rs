@@ -34,6 +34,7 @@ async fn main() -> Result<()> {
     let db = DatabaseClient::new(env_var!("DATABASE_URL")).await?;
 
     let mut api_client = TwitchClient::new(
+        env_var!("TWITCH_CLIENT_SECRET"),
         env_var!("TWITCH_REFRESH_TOKEN"),
         env_var!("TWITCH_CLIENT_ID"),
     )

@@ -10,13 +10,17 @@ pub struct TwitchClient {
 }
 impl TwitchClient {
     /// Constructs a new client from a refresh token and client ID
-    pub async fn new(refresh_token: &str, client_id: &str) -> Result<Self> {
+    pub async fn new(client_secret: &str, refresh_token: &str, client_id: &str) -> Result<Self> {
         let client = twitch_api::HelixClient::with_client(
             reqwest::Client::default_client_with_name(Some("plustwo.live watcher".parse()?))?,
         );
-        let token =
-            UserToken::from_refresh_token(&client, refresh_token.into(), client_id.into(), None)
-                .await?;
+        let token = UserToken::from_refresh_token(
+            &client,
+            refresh_token.into(),
+            client_id.into(),
+            Some(client_secret.into()),
+        )
+        .await?;
 
         Ok(Self { client, token })
     }
