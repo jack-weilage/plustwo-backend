@@ -1,0 +1,27 @@
+[package]
+name = "plustwo-watcher"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+plustwo-database = { path = "../../crates/plustwo-database" }
+plustwo-twitch-gql = { path = "../../crates/plustwo-twitch-gql" }
+
+eyre = "0.6.12"
+tokio = { version = "1.44.1", features = ["full"] }
+tokio-tungstenite = { version = "0.26.2", features = ["native-tls", "url"] }
+tokio-stream = "0.1.17"
+
+reqwest = { version = "0.12.15", features = ["json"] }
+twitch_api = { version = "0.7.1", features = [
+	"client",
+	"eventsub",
+	"helix",
+	"hmac",
+	"reqwest",
+] }
+
+tracing = "0.1.41"
+
+[lints]
+workspace = true

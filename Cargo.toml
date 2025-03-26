@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["apps/*", "crates/*", "crates/plustwo-database/migration"]
+
+[workspace.lints.clippy]
+complexity = "warn"
+correctness = "warn"
+nursery = "warn"
+pedantic = "warn"
+perf = "warn"
+style = "warn"
+suspicious = "warn"
