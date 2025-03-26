@@ -86,12 +86,14 @@ async fn main() -> Result<()> {
                     message: Message::Notification(payload),
                     ..
                 }) => {
+                    tracing::info!("StreamOnlineV1({})", payload.broadcaster_user_login);
                     on_stream_online(&graphql_client, &db, &payload, &mut current_broadcasts).await
                 }
                 TwitchEvent::StreamOfflineV1(Payload {
                     message: Message::Notification(payload),
                     ..
                 }) => {
+                    tracing::info!("StreamOfflineV1({})", payload.broadcaster_user_login);
                     db.end_broadcast(
                         payload.broadcaster_user_id.as_str().parse()?,
                         metadata.message_timestamp.as_str().parse()?,
@@ -107,10 +109,21 @@ async fn main() -> Result<()> {
                     let Some(&broadcast_id) =
                         current_broadcasts.get(&payload.broadcaster_user_id.as_str().parse()?)
                     else {
-                        tracing::warn!("Recieved a message without a broadcast? Skipping...");
+                        tracing::warn!(
+                            "ChatMessageOffline({}, {}, {}",
+                            payload.broadcaster_user_login,
+                            payload.chatter_user_login,
+                            payload.message.text
+                        );
                         continue;
                     };
 
+                    tracing::info!(
+                        "ChatMessage({}, {}, {})",
+                        payload.broadcaster_user_login,
+                        payload.chatter_user_login,
+                        payload.message.text
+                    );
                     on_chat_message(
                         &db,
                         &payload,
@@ -140,7 +153,7 @@ async fn on_welcome(
     api: &TwitchClient,
     session: &SessionData<'_>,
 ) -> Result<()> {
-    tracing::info!("Recieved welcome message");
+    tracing::info!("Recieved welcome message, setting up...");
     let watcher = gql.get_stream_by_user(env_var!("TWITCH_USER")).await?;
 
     for broadcaster_name in env_var!("TWITCH_BROADCASTERS").split(',') {
@@ -198,6 +211,12 @@ async fn on_welcome(
                     break;
                 }
             }
+
+            tracing::info!(
+                "Inserting {} messages from {} chatters in channel {broadcaster_name}",
+                messages.len(),
+                chatter_map.len(),
+            );
 
             // Insert chatters and messages in a huge block to significantly increase performance.
             db.insert_many_chatters(chatter_map.values()).await?;
