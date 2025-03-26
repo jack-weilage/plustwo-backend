@@ -30,6 +30,8 @@ macro_rules! env_var {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
     let graphql_client = TwitchGqlClient::new();
     let db = DatabaseClient::new(env_var!("DATABASE_URL")).await?;
 
@@ -138,6 +140,7 @@ async fn on_welcome(
     api: &TwitchClient,
     session: &SessionData<'_>,
 ) -> Result<()> {
+    tracing::info!("Recieved welcome message");
     let watcher = gql.get_stream_by_user(env_var!("TWITCH_USER")).await?;
 
     for broadcaster_name in env_var!("TWITCH_BROADCASTERS").split(',') {
