@@ -24,13 +24,14 @@ RUN apk add --no-cache clang lld musl-dev git openssl-dev
 # 
 # NOTE: The RUSTFLAGS environment variable is set to ensure that the linker 
 # doesn't produce static binaries, which Alpine doesn't seem to like.
-RUN --mount=type=bind,source=src,target=src \
+RUN --mount=type=bind,source=crates,target=crates \
+    --mount=type=bind,source=apps,target=apps \
     --mount=type=bind,source=Cargo.toml,target=Cargo.toml \
     --mount=type=bind,source=Cargo.lock,target=Cargo.lock \
     --mount=type=cache,target=/app/target/ \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
-    RUSTFLAGS='-C target-feature=-crt-static' cargo build --locked --release && \
+    RUSTFLAGS='-C target-feature=-crt-static' cargo build --locked --release --bin $APP_NAME && \
     cp ./target/release/$APP_NAME /bin/server
 
 ################################################################################
