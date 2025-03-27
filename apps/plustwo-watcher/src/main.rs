@@ -223,14 +223,6 @@ async fn on_welcome(
             // Insert chatters and messages in a huge block to significantly increase performance.
             db.insert_many_chatters(chatter_map.values()).await?;
             db.insert_many_messages(&messages).await?;
-
-            db.end_broadcast(
-                broadcaster.id.parse()?,
-                (stream.archive_video.created_at
-                    + Duration::from_secs(stream.archive_video.length_seconds))
-                .naive_utc(),
-            )
-            .await?;
         }
 
         let transport = twitch_api::eventsub::Transport::websocket(&session.id);
