@@ -59,6 +59,7 @@ async fn main() -> Result<()> {
                 payload: twitch_api::eventsub::WelcomePayload { session },
                 ..
             } => {
+                tracing::info!(name: "RecvWelcome", session = ?session);
                 on_welcome(
                     &db,
                     &graphql_client,
@@ -74,6 +75,7 @@ async fn main() -> Result<()> {
                 payload: twitch_api::eventsub::ReconnectPayload { session },
                 ..
             } => {
+                tracing::warn!(name: "RecvReconnect", session = ?session);
                 eventsub = EventSubSocket::connect(&session.reconnect_url.map_or_else(
                     || TWITCH_EVENTSUB_WEBSOCKET_URL.to_string(),
                     |url| url.to_string(),
@@ -151,14 +153,13 @@ async fn on_welcome(
     session: &SessionData<'_>,
     current_broadcasts: &mut HashMap<i64, i64>,
 ) -> Result<()> {
-    tracing::info!("Recieved welcome message, setting up...");
     let watcher = gql.get_stream_by_user(env_var!("TWITCH_USER")).await?;
 
     for broadcaster_name in env_var!("TWITCH_BROADCASTERS").split(',') {
         let broadcaster = gql.get_stream_by_user(broadcaster_name).await?;
 
         if let Some(stream) = broadcaster.stream {
-            tracing::info!("{broadcaster_name:?} is currently streaming, catching up to live...");
+            tracing::info!(name: "CatchupStart", broadcaster = broadcaster_name);
 
             // Make sure that the current broadcast is tracked even if the watcher started in the
             // middle of it.
@@ -180,6 +181,14 @@ async fn on_welcome(
                 let comments = gql
                     .get_comments_by_video_and_cursor(&stream.archive_video.id, cursor.clone())
                     .await?;
+
+                tracing::info!(
+                    name: "CatchupProgress",
+                    chatters = chatter_map.len(),
+                    messages = messages.len(),
+                    comments = comments.edges.len(),
+                    cursor = cursor
+                );
 
                 for comment in comments.edges {
                     cursor = comment.cursor;
@@ -209,15 +218,15 @@ async fn on_welcome(
                     });
                 }
 
-                if !comments.page_info.has_next_page {
+                if !comments.page_info.has_next_page || cursor.is_none() {
                     break;
                 }
             }
 
             tracing::info!(
-                "Inserting {} messages from {} chatters in channel {broadcaster_name}",
-                messages.len(),
-                chatter_map.len(),
+                name: "CatchupComplete",
+                chatters = chatter_map.len(),
+                messages = messages.len(),
             );
 
             // Insert chatters and messages in a huge block to significantly increase performance.
