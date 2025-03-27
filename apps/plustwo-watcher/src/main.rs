@@ -58,7 +58,16 @@ async fn main() -> Result<()> {
             EventsubWebsocketData::Welcome {
                 payload: twitch_api::eventsub::WelcomePayload { session },
                 ..
-            } => on_welcome(&db, &graphql_client, &api_client, &session).await,
+            } => {
+                on_welcome(
+                    &db,
+                    &graphql_client,
+                    &api_client,
+                    &session,
+                    &mut current_broadcasts,
+                )
+                .await
+            }
 
             // Sent if the server that the client is connected to needs to swap.
             EventsubWebsocketData::Reconnect {
@@ -106,25 +115,12 @@ async fn main() -> Result<()> {
                     message: Message::Notification(payload),
                     ..
                 }) => {
-                    tracing::debug!(name: "ChatMessage", broadcasts = ?current_broadcasts);
                     let Some(&broadcast_id) =
                         current_broadcasts.get(&payload.broadcaster_user_id.as_str().parse()?)
                     else {
-                        tracing::warn!(
-                            "ChatMessageOffline({}, {}, {}",
-                            payload.broadcaster_user_login,
-                            payload.chatter_user_login,
-                            payload.message.text
-                        );
                         continue;
                     };
 
-                    tracing::info!(
-                        "ChatMessage({}, {}, {})",
-                        payload.broadcaster_user_login,
-                        payload.chatter_user_login,
-                        payload.message.text
-                    );
                     on_chat_message(
                         &db,
                         &payload,
@@ -153,6 +149,7 @@ async fn on_welcome(
     gql: &TwitchGqlClient,
     api: &TwitchClient,
     session: &SessionData<'_>,
+    current_broadcasts: &mut HashMap<i64, i64>,
 ) -> Result<()> {
     tracing::info!("Recieved welcome message, setting up...");
     let watcher = gql.get_stream_by_user(env_var!("TWITCH_USER")).await?;
@@ -162,6 +159,10 @@ async fn on_welcome(
 
         if let Some(stream) = broadcaster.stream {
             tracing::info!("{broadcaster_name:?} is currently streaming, catching up to live...");
+
+            // Make sure that the current broadcast is tracked even if the watcher started in the
+            // middle of it.
+            current_broadcasts.insert(broadcaster.id.parse()?, stream.archive_video.id.parse()?);
 
             db.start_broadcast(
                 stream.archive_video.id.parse()?,
@@ -299,6 +300,13 @@ async fn on_chat_message(
         t if t.starts_with("-2") || t.ends_with("-2") => MessageKind::MinusTwo,
         _ => return Ok(()),
     };
+
+    tracing::info!(
+        name: "ChatMessage",
+        broadcaster = payload.broadcaster_user_name.as_str(),
+        chatter = payload.chatter_user_name.as_str(),
+        kind = ?message_kind
+    );
 
     // Attempt to insert chatter if they don't exist.
     db.insert_chatter(
