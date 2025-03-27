@@ -106,6 +106,7 @@ async fn main() -> Result<()> {
                     message: Message::Notification(payload),
                     ..
                 }) => {
+                    tracing::debug!(name: "ChatMessage", broadcasts = ?current_broadcasts);
                     let Some(&broadcast_id) =
                         current_broadcasts.get(&payload.broadcaster_user_id.as_str().parse()?)
                     else {
@@ -263,23 +264,23 @@ async fn on_stream_online(
     payload: &StreamOnlineV1Payload,
     current_broadcasts: &mut HashMap<i64, i64>,
 ) -> Result<()> {
-    let broadcaster_and_stream = graphql_client
+    let broadcaster = graphql_client
         .get_stream_by_user(payload.broadcaster_user_login.as_str())
         .await?;
 
-    let Some(stream) = broadcaster_and_stream.stream else {
-        bail!("Failed to find broadcast after StreamOnline for {broadcaster_and_stream:?}")
+    let Some(stream) = broadcaster.stream else {
+        bail!("Failed to find broadcast after StreamOnline for {broadcaster:?}")
     };
 
-    let broadcaster_id = broadcaster_and_stream.id.as_str().parse()?;
-    let broadcast_id: i64 = stream.archive_video.id.parse()?;
+    let broadcaster_id = broadcaster.id.as_str().parse()?;
+    let broadcast_id = stream.archive_video.id.parse()?;
 
     current_broadcasts.insert(broadcaster_id, broadcast_id);
 
     db.start_broadcast(
         broadcast_id,
         broadcaster_id,
-        broadcaster_and_stream.broadcast_settings.title,
+        broadcaster.broadcast_settings.title,
         payload.started_at.as_str().parse()?,
     )
     .await?;
