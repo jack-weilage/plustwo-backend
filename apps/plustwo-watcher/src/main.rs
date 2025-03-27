@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use eyre::{Context as _, Result, bail};
 use plustwo_database::{
-    DatabaseClient,
+    DatabaseClient, DateTime,
     entities::{self, sea_orm_active_enums::MessageKind},
 };
 use plustwo_twitch_gql::{CommentsByVideoAndCursorMessage, TwitchGqlClient};
@@ -15,6 +15,7 @@ use twitch_api::{
         channel::{ChannelChatMessageV1, ChannelChatMessageV1Payload},
         stream::{StreamOfflineV1, StreamOnlineV1, StreamOnlineV1Payload},
     },
+    types::Timestamp,
 };
 
 mod socket;
@@ -107,7 +108,7 @@ async fn main() -> Result<()> {
                     tracing::info!("StreamOfflineV1({})", payload.broadcaster_user_login);
                     db.end_broadcast(
                         payload.broadcaster_user_id.as_str().parse()?,
-                        metadata.message_timestamp.as_str().parse()?,
+                        timestamp_to_time(&metadata.message_timestamp.into_owned())?,
                     )
                     .await?;
 
@@ -283,7 +284,7 @@ async fn on_stream_online(
         broadcast_id,
         broadcaster_id,
         broadcaster.broadcast_settings.title,
-        payload.started_at.as_str().parse()?,
+        timestamp_to_time(&payload.started_at)?,
     )
     .await?;
 
@@ -320,7 +321,7 @@ async fn on_chat_message(
         payload.message_id.as_str().parse()?,
         broadcast_id,
         payload.chatter_user_id.as_str().parse()?,
-        sent_at.as_str().parse()?,
+        timestamp_to_time(&sent_at)?,
         message_kind,
     )
     .await?;
@@ -341,4 +342,9 @@ fn kind_from_message(message: &CommentsByVideoAndCursorMessage) -> Option<Messag
             return None;
         },
     )
+}
+
+fn timestamp_to_time(ts: &Timestamp) -> Result<DateTime> {
+    DateTime::parse_from_str(ts.as_str(), "%Y-%m-%dT%H:%M:%S%.f%Z")
+        .wrap_err("Failed to transform timestamp to datetime")
 }
