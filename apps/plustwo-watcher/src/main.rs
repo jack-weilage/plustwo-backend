@@ -105,13 +105,17 @@ async fn main() -> Result<()> {
                     message: Message::Notification(payload),
                     ..
                 }) => {
+                    let user_id = payload.broadcaster_user_id.as_str().parse()?;
                     tracing::info!("StreamOfflineV1({})", payload.broadcaster_user_login);
+
                     db.end_broadcast(
-                        payload.broadcaster_user_id.as_str().parse()?,
+                        user_id,
                         timestamp_to_time(&metadata.message_timestamp.into_owned())?,
-                        None,
+                        current_broadcasts.get(&user_id).copied(),
                     )
                     .await?;
+
+                    current_broadcasts.remove(&user_id);
 
                     Ok(())
                 }
