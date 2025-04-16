@@ -7,7 +7,7 @@ use uuid::Uuid;
 /// one now requires some authorization, but this one works.
 const TWITCH_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
 
-mod shared;
+pub mod shared;
 
 pub struct TwitchGqlClient {
     client: reqwest::Client,
@@ -151,6 +151,31 @@ impl TwitchGqlClient {
 
         Ok(res.data.user)
     }
+}
+
+pub async fn collect_from_cursor<T, F>(mut f: F) -> reqwest::Result<Vec<T>>
+where
+    F: AsyncFnMut(Option<String>, usize, &Vec<T>) -> reqwest::Result<QueryConnection<T>>,
+{
+    let mut cursor = None;
+    let mut complete_list = Vec::new();
+    let mut total_count = 0;
+
+    loop {
+        let chunk = f(cursor.clone(), total_count, &complete_list).await?;
+        total_count = chunk.total_count;
+
+        for video in chunk.edges {
+            cursor = video.cursor;
+            complete_list.push(video.node);
+        }
+
+        if !chunk.page_info.has_next_page {
+            break;
+        }
+    }
+
+    Ok(complete_list)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
