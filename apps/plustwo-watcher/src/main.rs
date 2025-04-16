@@ -7,7 +7,7 @@ use plustwo_database::{
 };
 use plustwo_twitch_gql::{
     CommentsByVideoAndCursorComment, CommentsByVideoAndCursorMessage, TwitchGqlClient,
-    collect_from_cursor,
+    UserAndStreamByLogin, UserAndStreamByLoginStream, collect_from_cursor,
 };
 use socket::EventSubSocket;
 use twitch::TwitchClient;
@@ -167,73 +167,7 @@ async fn on_welcome(
     for broadcaster_name in env_var!("TWITCH_BROADCASTERS").split(',') {
         let broadcaster = gql.get_stream_by_user(broadcaster_name).await?;
 
-        if let Some(stream) = broadcaster.stream {
-            tracing::info!(name: "CatchupStart", broadcaster = broadcaster_name);
-
-            // Make sure that the current broadcast is tracked even if the watcher started in the
-            // middle of it.
-            current_broadcasts.insert(broadcaster.id.parse()?, stream.archive_video.id.parse()?);
-
-            db.start_broadcast(
-                stream.archive_video.id.parse()?,
-                broadcaster.id.parse()?,
-                stream.archive_video.title,
-                stream.archive_video.created_at.naive_utc(),
-            )
-            .await?;
-
-            let mut chatter_map = HashMap::new();
-            let mut messages = Vec::new();
-
-            let comments: Vec<CommentsByVideoAndCursorComment> =
-                collect_from_cursor(async |cursor, _, comments| {
-                    tracing::info!(
-                        name: "CatchupProgress",
-                        comments = comments.len(),
-                        cursor = cursor
-                    );
-
-                    gql.get_comments_by_video_and_cursor(&stream.archive_video.id, cursor)
-                        .await
-                })
-                .await?;
-
-            for comment in comments {
-                // Some users don't show up. Maybe they've deleted their account or been
-                // banned?
-                let Some(user) = comment.commenter else {
-                    continue;
-                };
-
-                let Some(message_kind) = kind_from_message(&comment.message) else {
-                    continue;
-                };
-
-                let chatter = entities::chatters::Model {
-                    id: user.id.parse()?,
-                    display_name: user.display_name,
-                };
-
-                chatter_map.insert(chatter.id, chatter.clone());
-                messages.push(entities::messages::Model {
-                    id: comment.id,
-                    broadcast_id: stream.archive_video.id.parse()?,
-                    chatter_id: chatter.id,
-                    sent_at: comment.created_at.naive_utc(),
-                    message_kind,
-                });
-            }
-
-            tracing::info!(
-                name: "CatchupComplete",
-                chatters = chatter_map.len(),
-                messages = messages.len(),
-            );
-
-            // Insert chatters and messages in a huge block to significantly increase performance.
-            db.insert_many_chatters(chatter_map.values()).await?;
-            db.insert_many_messages(&messages).await?;
-        }
+        handle_catchup(db, gql, &broadcaster, broadcaster_name, current_broadcasts).await?;
 
         let transport = twitch_api::eventsub::Transport::websocket(&session.id);
 
@@ -325,6 +259,86 @@ async fn on_chat_message(
         message_kind,
     )
     .await?;
+
+    Ok(())
+}
+
+async fn handle_catchup(
+    db: &DatabaseClient,
+    gql: &TwitchGqlClient,
+    broadcaster: &UserAndStreamByLogin,
+    broadcaster_name: &str,
+    current_broadcasts: &mut HashMap<i64, i64>,
+) -> Result<()> {
+    let Some(stream) = &broadcaster.stream else {
+        return Ok(());
+    };
+
+    tracing::info!(name: "CatchupStart", broadcaster = broadcaster_name);
+
+    // Make sure that the current broadcast is tracked even if the watcher started in the
+    // middle of it.
+    current_broadcasts.insert(broadcaster.id.parse()?, stream.archive_video.id.parse()?);
+
+    db.start_broadcast(
+        stream.archive_video.id.parse()?,
+        broadcaster.id.parse()?,
+        stream.archive_video.title.clone(),
+        stream.archive_video.created_at.naive_utc(),
+    )
+    .await?;
+
+    let mut chatter_map = HashMap::new();
+    let mut messages = Vec::new();
+
+    let comments: Vec<CommentsByVideoAndCursorComment> =
+        collect_from_cursor(async |cursor, _, comments| {
+            tracing::info!(
+                name: "CatchupProgress",
+                comments = comments.len(),
+                cursor = cursor
+            );
+
+            gql.get_comments_by_video_and_cursor(&stream.archive_video.id, cursor)
+                .await
+        })
+        .await?;
+
+    for comment in comments {
+        // Some users don't show up. Maybe they've deleted their account or been
+        // banned?
+        let Some(user) = comment.commenter else {
+            continue;
+        };
+
+        let Some(message_kind) = kind_from_message(&comment.message) else {
+            continue;
+        };
+
+        let chatter = entities::chatters::Model {
+            id: user.id.parse()?,
+            display_name: user.display_name,
+        };
+
+        chatter_map.insert(chatter.id, chatter.clone());
+        messages.push(entities::messages::Model {
+            id: comment.id,
+            broadcast_id: stream.archive_video.id.parse()?,
+            chatter_id: chatter.id,
+            sent_at: comment.created_at.naive_utc(),
+            message_kind,
+        });
+    }
+
+    tracing::info!(
+        name: "CatchupComplete",
+        chatters = chatter_map.len(),
+        messages = messages.len(),
+    );
+
+    // Insert chatters and messages in a huge block to significantly increase performance.
+    db.insert_many_chatters(chatter_map.values()).await?;
+    db.insert_many_messages(&messages).await?;
 
     Ok(())
 }
