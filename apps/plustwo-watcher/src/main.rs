@@ -5,7 +5,10 @@ use plustwo_database::{
     DatabaseClient, DateTime,
     entities::{self, sea_orm_active_enums::MessageKind},
 };
-use plustwo_twitch_gql::{CommentsByVideoAndCursorMessage, TwitchGqlClient};
+use plustwo_twitch_gql::{
+    CommentsByVideoAndCursorComment, CommentsByVideoAndCursorMessage, TwitchGqlClient,
+    collect_from_cursor,
+};
 use socket::EventSubSocket;
 use twitch::TwitchClient;
 use twitch_api::{
@@ -182,51 +185,43 @@ async fn on_welcome(
             let mut chatter_map = HashMap::new();
             let mut messages = Vec::new();
 
-            let mut cursor = None;
-            loop {
-                let comments = gql
-                    .get_comments_by_video_and_cursor(&stream.archive_video.id, cursor.clone())
-                    .await?;
+            let comments: Vec<CommentsByVideoAndCursorComment> =
+                collect_from_cursor(async |cursor, _, comments| {
+                    tracing::info!(
+                        name: "CatchupProgress",
+                        comments = comments.len(),
+                        cursor = cursor
+                    );
 
-                tracing::info!(
-                    name: "CatchupProgress",
-                    chatters = chatter_map.len(),
-                    messages = messages.len(),
-                    comments = comments.edges.len(),
-                    cursor = cursor
-                );
+                    gql.get_comments_by_video_and_cursor(&stream.archive_video.id, cursor)
+                        .await
+                })
+                .await?;
 
-                for comment in comments.edges {
-                    cursor = comment.cursor;
+            for comment in comments {
+                // Some users don't show up. Maybe they've deleted their account or been
+                // banned?
+                let Some(user) = comment.commenter else {
+                    continue;
+                };
 
-                    // Some users don't show up. Maybe they've deleted their account or been
-                    // banned?
-                    let Some(user) = comment.node.commenter else {
-                        continue;
-                    };
+                let Some(message_kind) = kind_from_message(&comment.message) else {
+                    continue;
+                };
 
-                    let Some(message_kind) = kind_from_message(&comment.node.message) else {
-                        continue;
-                    };
+                let chatter = entities::chatters::Model {
+                    id: user.id.parse()?,
+                    display_name: user.display_name,
+                };
 
-                    let chatter = entities::chatters::Model {
-                        id: user.id.parse()?,
-                        display_name: user.display_name,
-                    };
-
-                    chatter_map.insert(chatter.id, chatter.clone());
-                    messages.push(entities::messages::Model {
-                        id: comment.node.id,
-                        broadcast_id: stream.archive_video.id.parse()?,
-                        chatter_id: chatter.id,
-                        sent_at: comment.node.created_at.naive_utc(),
-                        message_kind,
-                    });
-                }
-
-                if !comments.page_info.has_next_page || cursor.is_none() {
-                    break;
-                }
+                chatter_map.insert(chatter.id, chatter.clone());
+                messages.push(entities::messages::Model {
+                    id: comment.id,
+                    broadcast_id: stream.archive_video.id.parse()?,
+                    chatter_id: chatter.id,
+                    sent_at: comment.created_at.naive_utc(),
+                    message_kind,
+                });
             }
 
             tracing::info!(
