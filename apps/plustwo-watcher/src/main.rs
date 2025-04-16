@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::collections::HashMap;
 
 use eyre::{Context as _, Result, bail};
 use plustwo_database::{
@@ -109,6 +109,7 @@ async fn main() -> Result<()> {
                     db.end_broadcast(
                         payload.broadcaster_user_id.as_str().parse()?,
                         timestamp_to_time(&metadata.message_timestamp.into_owned())?,
+                        None,
                     )
                     .await?;
 

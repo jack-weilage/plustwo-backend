@@ -144,7 +144,11 @@ impl DatabaseClient {
         };
 
         Broadcasts::insert(broadcast)
-            .on_conflict_do_nothing()
+            .on_conflict(
+                OnConflict::column(entities::broadcasts::Column::Id)
+                    .update_column(entities::broadcasts::Column::StartedAt)
+                    .to_owned(),
+            )
             .exec(&self.db)
             .await?;
 
@@ -156,16 +160,23 @@ impl DatabaseClient {
         &self,
         broadcaster_id: i64,
         ended_at: DateTime,
+        broadcast_id: Option<i64>,
     ) -> Result<(), sea_orm::DbErr> {
-        let broadcast = Broadcasts::find()
-            .filter(entities::broadcasts::Column::EndedAt.is_null())
-            .filter(entities::broadcasts::Column::BroadcasterId.eq(broadcaster_id))
-            .one(&self.db)
-            .await?
-            // TODO: properly handle
-            .unwrap();
+        // If a broadcast ID is provided, we can use it to find the broadcast.
+        // Otherwise, we need to find the most recent broadcast that has not ended yet.
 
-        let mut broadcast = broadcast.into_active_model();
+        let broadcast = if let Some(broadcast_id) = broadcast_id {
+            Broadcasts::find_by_id(broadcast_id).one(&self.db).await?
+        } else {
+            Broadcasts::find()
+                .filter(entities::broadcasts::Column::EndedAt.is_null())
+                .filter(entities::broadcasts::Column::BroadcasterId.eq(broadcaster_id))
+                .one(&self.db)
+                .await?
+        };
+
+        // TODO: Better error handling
+        let mut broadcast = broadcast.unwrap().into_active_model();
         broadcast.ended_at = Set(Some(ended_at));
 
         broadcast.update(&self.db).await?;
