@@ -1,8 +1,9 @@
 use entities::sea_orm_active_enums::MessageKind;
 use entities::{
-    broadcasts::Entity as Broadcasts, chatters::Entity as Chatters, messages::Entity as Messages,
+    broadcasters::Entity as Broadcasters, broadcasts::Entity as Broadcasts,
+    chatters::Entity as Chatters, messages::Entity as Messages,
 };
-use sea_orm::{ActiveModelTrait, ColumnTrait, IntoActiveModel, QueryFilter};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityOrSelect, IntoActiveModel, QueryFilter};
 use sea_orm::{
     ActiveValue::{Set, Unchanged},
     Database, DatabaseConnection, EntityTrait as _,
@@ -24,6 +25,13 @@ impl DatabaseClient {
         Ok(Self { db })
     }
 
+    /// Retrieves a complete list of broadcasters.
+    pub async fn select_broadcasters(
+        &self,
+    ) -> Result<Vec<entities::broadcasters::Model>, sea_orm::DbErr> {
+        Broadcasters::find().all(&self.db).await
+    }
+
     /// Inserts a new broadcaster into the database, updating if the entry already exists.
     pub async fn insert_broadcaster(
         &self,
@@ -37,7 +45,7 @@ impl DatabaseClient {
             profile_image_url: Set(Some(profile_image_url.to_string())),
         };
 
-        entities::broadcasters::Entity::insert(broadcaster)
+        Broadcasters::insert(broadcaster)
             .on_conflict(
                 OnConflict::column(entities::broadcasters::Column::Id)
                     .update_columns([
