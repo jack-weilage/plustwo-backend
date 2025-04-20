@@ -40,12 +40,15 @@ async fn main() -> Result<()> {
         env_var!("TWITCH_CLIENT_ID"),
     )
     .await?;
-    api_client.refresh_token().await?;
 
     let mut state = State::new(&graphql_client, env_var!("TWITCH_USER")).await?;
 
     let mut eventsub = EventSubSocket::connect(TWITCH_EVENTSUB_WEBSOCKET_URL.as_str()).await?;
     loop {
+        // Refresh auth token if it's out of date.
+        api_client.refresh_token().await?;
+
+        // Update broadcasters if they're out of date.
         if state.should_update_broadcasters() {
             state
                 .update_broadcasters(&db, &graphql_client, &api_client)
