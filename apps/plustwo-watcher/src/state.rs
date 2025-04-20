@@ -9,7 +9,7 @@ use plustwo_twitch_gql::TwitchGqlClient;
 
 use crate::{broadcaster::WatchedBroadcaster, twitch::TwitchClient};
 
-const BROADCASTER_REFRESH_RATE: Duration = Duration::from_secs(60);
+const BROADCASTER_REFRESH_RATE: Duration = Duration::from_secs(30 * 60);
 
 pub struct State {
     pub broadcasters: HashMap<i64, WatchedBroadcaster>,
