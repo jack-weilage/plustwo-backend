@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-
-use broadcaster::WatchedBroadcaster;
 use eyre::{Context as _, Result, bail};
 use plustwo_database::{DatabaseClient, DateTime, entities::sea_orm_active_enums::MessageKind};
 use plustwo_twitch_gql::{CommentsByVideoAndCursorMessage, TwitchGqlClient};
@@ -266,33 +263,6 @@ async fn on_chat_message(
     .await?;
 
     Ok(())
-}
-
-async fn fetch_new_broadcasters(
-    broadcasters: &HashMap<i64, WatchedBroadcaster>,
-    db: &DatabaseClient,
-    gql: &TwitchGqlClient,
-) -> Result<Vec<WatchedBroadcaster>> {
-    let mut new_broadcasters = Vec::new();
-
-    for broadcaster in db.select_broadcasters().await? {
-        if broadcasters.contains_key(&broadcaster.id) {
-            continue;
-        }
-
-        let current_broadcast = gql
-            .get_stream_by_user(&broadcaster.display_name)
-            .await?
-            .stream;
-
-        new_broadcasters.push(WatchedBroadcaster {
-            current_broadcast,
-            broadcaster,
-            is_watching: false,
-        });
-    }
-
-    Ok(new_broadcasters)
 }
 
 fn kind_from_message(message: &CommentsByVideoAndCursorMessage) -> Option<MessageKind> {
