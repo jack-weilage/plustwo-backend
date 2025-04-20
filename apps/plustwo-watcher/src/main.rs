@@ -1,26 +1,25 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
+use broadcaster::WatchedBroadcaster;
 use eyre::{Context as _, Result, bail};
-use plustwo_database::{
-    DatabaseClient, DateTime,
-    entities::{self, sea_orm_active_enums::MessageKind},
-};
-use plustwo_twitch_gql::{
-    CommentsByVideoAndCursorComment, CommentsByVideoAndCursorMessage, TwitchGqlClient,
-    UserAndStreamByLogin, UserAndStreamByLoginStream, collect_from_cursor,
-};
+use plustwo_database::{DatabaseClient, DateTime, entities::sea_orm_active_enums::MessageKind};
+use plustwo_twitch_gql::{CommentsByVideoAndCursorMessage, TwitchGqlClient};
 use socket::EventSubSocket;
 use twitch::TwitchClient;
 use twitch_api::{
     TWITCH_EVENTSUB_WEBSOCKET_URL,
     eventsub::{
-        Event as TwitchEvent, EventsubWebsocketData, Message, Payload, SessionData,
-        channel::{ChannelChatMessageV1, ChannelChatMessageV1Payload},
-        stream::{StreamOfflineV1, StreamOnlineV1, StreamOnlineV1Payload},
+        Event as TwitchEvent, EventsubWebsocketData, Message, Payload,
+        channel::ChannelChatMessageV1Payload,
+        stream::{StreamOfflineV1Payload, StreamOnlineV1Payload},
     },
     types::Timestamp,
 };
 
+mod broadcaster;
 mod socket;
 mod twitch;
 
@@ -32,6 +31,9 @@ macro_rules! env_var {
     };
 }
 
+const BROADCASTER_REFRESH_RATE: Duration = Duration::from_secs(60);
+
+#[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -47,10 +49,39 @@ async fn main() -> Result<()> {
     .await?;
     api_client.refresh_token().await?;
 
-    let mut current_broadcasts: HashMap<i64, i64> = HashMap::new();
+    let watcher = graphql_client
+        .get_stream_by_user(env_var!("TWITCH_USER"))
+        .await?;
+
+    let mut broadcasters: HashMap<i64, WatchedBroadcaster> = HashMap::new();
+    for broadcaster in fetch_new_broadcasters(&broadcasters, &db, &graphql_client).await? {
+        // If the broadcaster is already streaming, catch up to live.
+        broadcaster.catchup(&db, &graphql_client).await?;
+
+        broadcasters.insert(broadcaster.broadcaster.id, broadcaster);
+    }
+    let mut last_broadcaster_check = Instant::now();
+
+    let mut session_id = String::new();
 
     let mut eventsub = EventSubSocket::connect(TWITCH_EVENTSUB_WEBSOCKET_URL.as_str()).await?;
     loop {
+        if last_broadcaster_check.elapsed() > BROADCASTER_REFRESH_RATE {
+            let new_broadcasters =
+                fetch_new_broadcasters(&broadcasters, &db, &graphql_client).await?;
+            last_broadcaster_check = Instant::now();
+
+            for mut broadcaster in new_broadcasters {
+                broadcaster
+                    .watch(&api_client, &session_id, &watcher.id)
+                    .await?;
+
+                broadcaster.catchup(&db, &graphql_client).await?;
+
+                broadcasters.insert(broadcaster.broadcaster.id, broadcaster);
+            }
+        }
+
         let msg = eventsub.next_message().await?;
         let event = twitch_api::eventsub::Event::parse_websocket(&msg)?;
 
@@ -64,14 +95,16 @@ async fn main() -> Result<()> {
                 ..
             } => {
                 tracing::info!(name: "RecvWelcome", session = ?session);
-                on_welcome(
-                    &db,
-                    &graphql_client,
-                    &api_client,
-                    &session,
-                    &mut current_broadcasts,
-                )
-                .await
+                session_id = session.id.into_owned();
+
+                for broadcaster in broadcasters.values_mut() {
+                    // Subscribe to each broadcaster's notifications.
+                    broadcaster
+                        .watch(&api_client, &session_id, &watcher.id)
+                        .await?;
+                }
+
+                Ok(())
             }
 
             // Sent if the server that the client is connected to needs to swap.
@@ -80,9 +113,11 @@ async fn main() -> Result<()> {
                 ..
             } => {
                 tracing::warn!(name: "RecvReconnect", session = ?session);
-                eventsub = EventSubSocket::connect(&session.reconnect_url.map_or_else(
+                session_id = session.id.into_owned();
+
+                eventsub = EventSubSocket::connect(&session.reconnect_url.as_ref().map_or_else(
                     || TWITCH_EVENTSUB_WEBSOCKET_URL.to_string(),
-                    |url| url.to_string(),
+                    ToString::to_string,
                 ))
                 .await?;
 
@@ -102,33 +137,38 @@ async fn main() -> Result<()> {
                     ..
                 }) => {
                     tracing::info!("StreamOnlineV1({})", payload.broadcaster_user_login);
-                    on_stream_online(&graphql_client, &db, &payload, &mut current_broadcasts).await
+                    on_stream_online(&graphql_client, &db, &payload, &mut broadcasters).await
                 }
                 TwitchEvent::StreamOfflineV1(Payload {
                     message: Message::Notification(payload),
                     ..
                 }) => {
-                    let user_id = payload.broadcaster_user_id.as_str().parse()?;
                     tracing::info!("StreamOfflineV1({})", payload.broadcaster_user_login);
-
-                    db.end_broadcast(
-                        user_id,
-                        timestamp_to_time(&metadata.message_timestamp.into_owned())?,
-                        current_broadcasts.get(&user_id).copied(),
+                    on_stream_offline(
+                        &db,
+                        &metadata.message_timestamp.into_owned(),
+                        &payload,
+                        &mut broadcasters,
                     )
-                    .await?;
-
-                    current_broadcasts.remove(&user_id);
-
-                    Ok(())
+                    .await
                 }
                 TwitchEvent::ChannelChatMessageV1(Payload {
                     message: Message::Notification(payload),
                     ..
                 }) => {
-                    let Some(&broadcast_id) =
-                        current_broadcasts.get(&payload.broadcaster_user_id.as_str().parse()?)
+                    let Some(broadcaster) =
+                        broadcasters.get(&payload.broadcaster_user_id.as_str().parse()?)
                     else {
+                        tracing::warn!(
+                            "Somehow managed to recv a message for an untracked broadcaster ({})",
+                            payload.broadcaster_user_login
+                        );
+                        continue;
+                    };
+
+                    // Messages can be sent while a broadcaster isn't live, and we should skip
+                    // these.
+                    let Some(broadcast) = broadcaster.current_broadcast.as_ref() else {
                         continue;
                     };
 
@@ -136,7 +176,7 @@ async fn main() -> Result<()> {
                         &db,
                         &payload,
                         metadata.message_timestamp.into(),
-                        broadcast_id,
+                        broadcast.archive_video.id.parse()?,
                     )
                     .await
                 }
@@ -155,72 +195,68 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn on_welcome(
-    db: &DatabaseClient,
-    gql: &TwitchGqlClient,
-    api: &TwitchClient,
-    session: &SessionData<'_>,
-    current_broadcasts: &mut HashMap<i64, i64>,
-) -> Result<()> {
-    let watcher = gql.get_stream_by_user(env_var!("TWITCH_USER")).await?;
-
-    for broadcaster_name in env_var!("TWITCH_BROADCASTERS").split(',') {
-        let broadcaster = gql.get_stream_by_user(broadcaster_name).await?;
-
-        handle_catchup(db, gql, &broadcaster, broadcaster_name, current_broadcasts).await?;
-
-        let transport = twitch_api::eventsub::Transport::websocket(&session.id);
-
-        api.subscribe(
-            transport.clone(),
-            StreamOnlineV1::broadcaster_user_id(broadcaster.id.as_str()),
-        )
-        .await?;
-
-        api.subscribe(
-            transport.clone(),
-            StreamOfflineV1::broadcaster_user_id(broadcaster.id.as_str()),
-        )
-        .await?;
-
-        api.subscribe(
-            transport.clone(),
-            ChannelChatMessageV1::new(broadcaster.id.as_str(), watcher.id.as_str()),
-        )
-        .await?;
-
-        tracing::info!("Completed setup of {broadcaster_name}");
-    }
-
-    Ok(())
-}
-
 async fn on_stream_online(
     graphql_client: &TwitchGqlClient,
     db: &DatabaseClient,
     payload: &StreamOnlineV1Payload,
-    current_broadcasts: &mut HashMap<i64, i64>,
+    broadcasters: &mut HashMap<i64, WatchedBroadcaster>,
 ) -> Result<()> {
-    let broadcaster = graphql_client
-        .get_stream_by_user(payload.broadcaster_user_login.as_str())
-        .await?;
+    let Some(broadcaster) = broadcasters.get_mut(&payload.broadcaster_user_id.as_str().parse()?)
+    else {
+        tracing::warn!(
+            "Somehow managed to recv a StreamOnline for a broadcaster who wasn't tracked ({})",
+            payload.broadcaster_user_login
+        );
+        return Ok(());
+    };
 
-    let Some(stream) = broadcaster.stream else {
+    let Some(stream) = graphql_client
+        .get_stream_by_user(payload.broadcaster_user_login.as_str())
+        .await?
+        .stream
+    else {
         bail!("Failed to find broadcast after StreamOnline for {broadcaster:?}")
     };
 
-    let broadcaster_id = broadcaster.id.as_str().parse()?;
-    let broadcast_id = stream.archive_video.id.parse()?;
-
-    current_broadcasts.insert(broadcaster_id, broadcast_id);
-
     db.start_broadcast(
-        broadcast_id,
-        broadcaster_id,
-        broadcaster.broadcast_settings.title,
+        stream.archive_video.id.parse()?,
+        broadcaster.broadcaster.id,
+        stream.archive_video.title.clone(),
         timestamp_to_time(&payload.started_at)?,
     )
     .await?;
+
+    broadcaster.current_broadcast = Some(stream);
+
+    Ok(())
+}
+
+async fn on_stream_offline(
+    db: &DatabaseClient,
+    timestamp: &Timestamp,
+    payload: &StreamOfflineV1Payload,
+    broadcasters: &mut HashMap<i64, WatchedBroadcaster>,
+) -> Result<()> {
+    let Some(broadcaster) = broadcasters.get_mut(&payload.broadcaster_user_id.as_str().parse()?)
+    else {
+        tracing::warn!(
+            "Failed to find broadcaster after StreamOffline ({})",
+            payload.broadcaster_user_login
+        );
+        return Ok(());
+    };
+
+    db.end_broadcast(
+        broadcaster.broadcaster.id,
+        timestamp_to_time(timestamp)?,
+        broadcaster
+            .current_broadcast
+            .as_ref()
+            .map(|b| b.archive_video.id.parse().unwrap()),
+    )
+    .await?;
+
+    broadcaster.current_broadcast = None;
 
     Ok(())
 }
@@ -263,84 +299,31 @@ async fn on_chat_message(
     Ok(())
 }
 
-async fn handle_catchup(
+async fn fetch_new_broadcasters(
+    broadcasters: &HashMap<i64, WatchedBroadcaster>,
     db: &DatabaseClient,
     gql: &TwitchGqlClient,
-    broadcaster: &UserAndStreamByLogin,
-    broadcaster_name: &str,
-    current_broadcasts: &mut HashMap<i64, i64>,
-) -> Result<()> {
-    let Some(stream) = &broadcaster.stream else {
-        return Ok(());
-    };
+) -> Result<Vec<WatchedBroadcaster>> {
+    let mut new_broadcasters = Vec::new();
 
-    tracing::info!(name: "CatchupStart", broadcaster = broadcaster_name);
-
-    // Make sure that the current broadcast is tracked even if the watcher started in the
-    // middle of it.
-    current_broadcasts.insert(broadcaster.id.parse()?, stream.archive_video.id.parse()?);
-
-    db.start_broadcast(
-        stream.archive_video.id.parse()?,
-        broadcaster.id.parse()?,
-        stream.archive_video.title.clone(),
-        stream.archive_video.created_at.naive_utc(),
-    )
-    .await?;
-
-    let mut chatter_map = HashMap::new();
-    let mut messages = Vec::new();
-
-    let comments: Vec<CommentsByVideoAndCursorComment> =
-        collect_from_cursor(async |cursor, _, comments| {
-            tracing::info!(
-                name: "CatchupProgress",
-                comments = comments.len(),
-                cursor = cursor
-            );
-
-            gql.get_comments_by_video_and_cursor(&stream.archive_video.id, cursor)
-                .await
-        })
-        .await?;
-
-    for comment in comments {
-        // Some users don't show up. Maybe they've deleted their account or been
-        // banned?
-        let Some(user) = comment.commenter else {
+    for broadcaster in db.select_broadcasters().await? {
+        if broadcasters.contains_key(&broadcaster.id) {
             continue;
-        };
+        }
 
-        let Some(message_kind) = kind_from_message(&comment.message) else {
-            continue;
-        };
+        let current_broadcast = gql
+            .get_stream_by_user(&broadcaster.display_name)
+            .await?
+            .stream;
 
-        let chatter = entities::chatters::Model {
-            id: user.id.parse()?,
-            display_name: user.display_name,
-        };
-
-        chatter_map.insert(chatter.id, chatter.clone());
-        messages.push(entities::messages::Model {
-            id: comment.id,
-            broadcast_id: stream.archive_video.id.parse()?,
-            chatter_id: chatter.id,
-            sent_at: comment.created_at.naive_utc(),
-            message_kind,
+        new_broadcasters.push(WatchedBroadcaster {
+            current_broadcast,
+            broadcaster,
+            is_watching: false,
         });
     }
 
-    tracing::info!(
-        name: "CatchupComplete",
-        chatters = chatter_map.len(),
-        messages = messages.len(),
-    );
-
-    // Insert chatters and messages in a huge block to significantly increase performance.
-    db.insert_many_chatters(chatter_map.values()).await?;
-    db.insert_many_messages(&messages).await?;
-
-    Ok(())
+    Ok(new_broadcasters)
 }
 
 fn kind_from_message(message: &CommentsByVideoAndCursorMessage) -> Option<MessageKind> {
