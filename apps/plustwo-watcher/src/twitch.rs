@@ -27,6 +27,7 @@ impl TwitchClient {
     /// Refreshes the token if the token is outdated.
     pub async fn refresh_token(&mut self) -> Result<()> {
         if self.token.is_elapsed() {
+            tracing::info!("Twitch token elapsed, refreshing!");
             self.token.refresh_token(&self.client).await?;
         }
 

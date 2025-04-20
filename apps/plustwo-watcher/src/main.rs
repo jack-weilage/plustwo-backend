@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
                 payload: twitch_api::eventsub::WelcomePayload { session },
                 ..
             } => {
-                tracing::info!(name: "RecvWelcome", session = ?session);
+                tracing::info!(name = "RecvWelcome", session = ?session);
                 state.session_id = session.id.into_owned();
 
                 state
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
                 payload: twitch_api::eventsub::ReconnectPayload { session },
                 ..
             } => {
-                tracing::warn!(name: "RecvReconnect", session = ?session);
+                tracing::warn!(name = "RecvReconnect", session = ?session);
                 state.session_id = session.id.into_owned();
 
                 eventsub = EventSubSocket::connect(&session.reconnect_url.as_ref().map_or_else(

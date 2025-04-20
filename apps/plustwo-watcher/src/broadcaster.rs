@@ -31,6 +31,11 @@ impl WatchedBroadcaster {
             return Ok(());
         }
 
+        tracing::info!(
+            name = "SubscriptionStart",
+            broadcaster = self.broadcaster.display_name
+        );
+
         let transport = Transport::websocket(session_id);
 
         api.subscribe(
@@ -53,6 +58,11 @@ impl WatchedBroadcaster {
 
         self.is_watching = true;
 
+        tracing::info!(
+            name = "SubscriptionComplete",
+            broadcaster = self.broadcaster.display_name
+        );
+
         Ok(())
     }
 
@@ -74,8 +84,9 @@ impl WatchedBroadcaster {
 
         let comments: Vec<CommentsByVideoAndCursorComment> =
             collect_from_cursor(async |cursor, _, comments| {
-                tracing::info!(
-                    name: "CatchupProgress",
+                tracing::debug!(
+                    name = "CatchupProgress",
+                    broadcaster = self.broadcaster.display_name,
                     comments = comments.len(),
                     cursor = cursor
                 );
@@ -112,7 +123,8 @@ impl WatchedBroadcaster {
         }
 
         tracing::info!(
-            name: "CatchupComplete",
+            name = "CatchupComplete",
+            broadcaster = self.broadcaster.display_name,
             chatters = chatter_map.len(),
             messages = messages.len(),
         );
