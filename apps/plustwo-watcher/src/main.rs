@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::collections::HashMap;
 
 use broadcaster::WatchedBroadcaster;
 use eyre::{Context as _, Result, bail};
@@ -30,8 +30,6 @@ macro_rules! env_var {
     };
 }
 
-const BROADCASTER_REFRESH_RATE: Duration = Duration::from_secs(60);
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -51,7 +49,7 @@ async fn main() -> Result<()> {
 
     let mut eventsub = EventSubSocket::connect(TWITCH_EVENTSUB_WEBSOCKET_URL.as_str()).await?;
     loop {
-        if state.last_broadcaster_check.elapsed() > BROADCASTER_REFRESH_RATE {
+        if state.should_update_broadcasters() {
             state
                 .update_broadcasters(&db, &graphql_client, &api_client)
                 .await?;

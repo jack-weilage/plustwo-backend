@@ -1,10 +1,15 @@
-use std::{collections::HashMap, time::Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use eyre::Result;
 use plustwo_database::DatabaseClient;
 use plustwo_twitch_gql::TwitchGqlClient;
 
 use crate::{broadcaster::WatchedBroadcaster, twitch::TwitchClient};
+
+const BROADCASTER_REFRESH_RATE: Duration = Duration::from_secs(60);
 
 pub struct State {
     pub broadcasters: HashMap<i64, WatchedBroadcaster>,
@@ -20,6 +25,9 @@ impl State {
             session_id: String::new(),
             watcher_id: gql.get_stream_by_user(watcher).await?.id,
         })
+    }
+    pub fn should_update_broadcasters(&self) -> bool {
+        self.last_broadcaster_check.elapsed() > BROADCASTER_REFRESH_RATE
     }
     pub async fn update_broadcasters(
         &mut self,
