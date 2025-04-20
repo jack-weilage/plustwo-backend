@@ -245,7 +245,7 @@ pub struct CommentsByVideoAndCursorFragment {
 
 //
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct UserAndStreamByLogin {
     pub id: String,
@@ -255,13 +255,13 @@ pub struct UserAndStreamByLogin {
     pub stream: Option<UserAndStreamByLoginStream>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct UserAndStreamByLoginBroadcastSettings {
     pub title: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct UserAndStreamByLoginStream {
     pub id: String,
